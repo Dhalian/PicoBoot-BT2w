@@ -5,6 +5,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include <tusb.h>
 
 #include <btstack_run_loop.h>
@@ -18,6 +19,7 @@
 #include <pico/stdlib.h>
 #include <uni.h>
 
+#include "controller_config.h"
 #include "endian.h"
 #include "gamecube.h"
 #include "hw.h"
@@ -43,6 +45,54 @@ static void bluepad_core_task(void)
     btstack_run_loop_execute();
 }
 
+// Tiny serial command console, typed over the same USB debug console used
+// for logs (e.g. via PuTTY). Lets you inspect/remove stored controller
+// profiles without waiting for the (still read-only) USB config drive.
+//   list             -- print every stored profile
+//   forget XXXXXX    -- erase the profile whose MAC ends with these 6 hex
+//                       chars (the same 6 chars shown in its .cfg filename)
+static void process_serial_commands(void)
+{
+    static char line[32];
+    static size_t line_len = 0;
+
+    int c;
+    while ((c = getchar_timeout_us(0)) != PICO_ERROR_TIMEOUT) {
+        if (c == '\r' || c == '\n') {
+            if (line_len > 0) {
+                line[line_len] = '\0';
+
+                if (strcmp(line, "list") == 0) {
+                    controller_profile_t profiles[CONTROLLER_CONFIG_MAX_SLOTS];
+                    int n = controller_config_list(profiles, CONTROLLER_CONFIG_MAX_SLOTS);
+                    printf("Stored controller profiles (%d):\n", n);
+                    for (int i = 0; i < n; i++) {
+                        printf("  %02X:%02X:%02X:%02X:%02X:%02X  port=P%d  model=%s\n",
+                            profiles[i].mac[0], profiles[i].mac[1], profiles[i].mac[2],
+                            profiles[i].mac[3], profiles[i].mac[4], profiles[i].mac[5],
+                            profiles[i].gc_port + 1, profiles[i].model_name);
+                    }
+                } else if (strncmp(line, "forget ", 7) == 0 && strlen(line) >= 13) {
+                    unsigned int b0, b1, b2;
+                    if (sscanf(line + 7, "%2x%2x%2x", &b0, &b1, &b2) == 3) {
+                        uint8_t suffix[3] = {(uint8_t)b0, (uint8_t)b1, (uint8_t)b2};
+                        bool deleted = controller_config_delete_by_suffix(suffix);
+                        printf(deleted ? "Profile forgotten.\n" : "No matching profile found.\n");
+                    } else {
+                        printf("Usage: forget XXXXXX (6 hex chars, e.g. forget 25AD66)\n");
+                    }
+                } else {
+                    printf("Unknown command. Try: list | forget XXXXXX\n");
+                }
+
+                line_len = 0;
+            }
+        } else if (line_len < sizeof(line) - 1) {
+            line[line_len++] = (char)c;
+        }
+    }
+}
+
 static void gamecube_task(void)
 {
     multicore_lockout_victim_init();
@@ -52,6 +102,7 @@ static void gamecube_task(void)
         // only ever be called from one place -- this replaces the
         // automatic background IRQ that pico_stdio_usb used to install.
         tud_task();
+        process_serial_commands();
         gamecube_comms_task();
     }
 }
