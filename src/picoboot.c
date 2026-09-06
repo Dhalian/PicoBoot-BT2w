@@ -203,12 +203,25 @@ void main()
         tight_loop_contents();
     }
 
-    if (dma_channel_is_busy(chan)) {
+    bool injection_completed = !dma_channel_is_busy(chan);
+
+    if (injection_completed) {
+        printf("PicoBoot: Injection confirmed complete.\n");
+    } else {
         printf("PicoBoot: Warning - injection did not complete within 5s, "
                "proceeding anyway.\n");
-    } else {
-        printf("PicoBoot: Injection confirmed complete.\n");
     }
+
+    // ---- Temporary diagnostic pin (remove once the real issue is found) ----
+    // GPIO3 is unused by this install's wiring. Steady 3.3V = the DMA
+    // transfer finished (the console's CS pulses were seen and matched).
+    // Steady 0V = we hit the 5s timeout above without ever seeing them.
+    // Check with a multimeter (GPIO3 to GND) right after a normal power-on,
+    // no PC/USB required.
+    #define PIN_DEBUG_RESULT 3
+    gpio_init(PIN_DEBUG_RESULT);
+    gpio_set_dir(PIN_DEBUG_RESULT, GPIO_OUT);
+    gpio_put(PIN_DEBUG_RESULT, injection_completed ? 1 : 0);
 
     pio_sm_set_enabled(pio0, transfer_start_sm, false);
     pio_sm_set_enabled(pio0, clocked_output_sm, false);
