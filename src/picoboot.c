@@ -13,6 +13,7 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/bus_ctrl.h"
+#include "hardware/vreg.h"
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
@@ -104,6 +105,15 @@ void main()
             status_led_toggle();
         }
     }
+
+#if defined(PICO_RP2350)
+    // Small extra core-voltage margin on RP2350 before overclocking to
+    // 250MHz. Community overclocking data suggests 250MHz is comfortably
+    // stable even at the default 1.10V on RP2350, so this is a low-cost
+    // safety margin rather than a proven fix -- kept modest on purpose.
+    vreg_set_voltage(VREG_VOLTAGE_1_15);
+    sleep_ms(10);
+#endif
 
     // Set 250MHz clock to get more cycles in between CLK pulses.
     // This is the lowest value I was able to make the code work.
