@@ -30,9 +30,15 @@
 #include "version.h"
 
 struct uni_platform* get_my_platform(void);
-
 static void bluepad_core_task(void)
 {
+    // Lets flash_safe_execute() (used by controller_config.c) pause THIS
+    // core when a write/erase is triggered from core 0 (e.g. the "forget"
+    // serial command). Without this, only writes triggered from core 1
+    // itself (e.g. on controller connect) could succeed -- flash_safe_execute
+    // would just time out trying to pause an unregistered core.
+    multicore_lockout_victim_init();
+
     if (cyw43_arch_init()) {
         loge("failed to initialise cyw43_arch\n");
         return;
