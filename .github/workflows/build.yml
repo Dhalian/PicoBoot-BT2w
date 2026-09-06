@@ -67,9 +67,8 @@ jobs:
           fi
 
       - name: Build
-        env:
-          PICO_SDK_PATH: "$HOME/runner/pico-sdk"
         run: |
+          export PICO_SDK_PATH="$HOME/pico-sdk"
           bash tools/build.sh
 
       - name: Check firmware size (must be < 512 KB)
