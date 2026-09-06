@@ -32,13 +32,17 @@
 const uint joybus_pins[4] = PINS_JOYBUS;
 
 mutex_t timestamp_mutex;
-volatile uint32_t time;
+// Renamed from "time" -- that name now collides with the C library's own
+// time() function, whose declaration gets pulled in transitively once
+// lwIP is linked (for the Wi-Fi config server). Purely a rename, same
+// variable, same behavior.
+volatile uint32_t s_gc_timestamp;
 uint32_t gamecube_get_timestamp()
 {
-  uint32_t ret = time;
+  uint32_t ret = s_gc_timestamp;
   mutex_enter_timeout_us(&timestamp_mutex, 100);
-  time = time_us_32();
-  ret = time;
+  s_gc_timestamp = time_us_32();
+  ret = s_gc_timestamp;
   mutex_exit(&timestamp_mutex);
 
   return ret;
