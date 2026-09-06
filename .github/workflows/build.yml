@@ -37,7 +37,18 @@ jobs:
             ninja-build \
             python3 \
             git \
-            build-essential
+            build-essential \
+            erlang
+
+      - name: Build uf2tool (same merge tool the official PicoBoot release uses)
+        run: |
+          wget -q https://s3.amazonaws.com/rebar3/rebar3 -O /usr/local/bin/rebar3
+          chmod +x /usr/local/bin/rebar3
+          git clone --depth 1 https://github.com/pguyot/uf2tool.git "$HOME/uf2tool"
+          cd "$HOME/uf2tool"
+          rebar3 escriptize
+          sudo cp _build/default/bin/uf2tool /usr/local/bin/uf2tool
+          sudo chmod +x /usr/local/bin/uf2tool
 
       - name: Fetch Pico SDK (${{ env.PICO_SDK_VERSION }})
         run: |
