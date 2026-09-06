@@ -7,49 +7,20 @@
 #include <stdio.h>
 #include <tusb.h>
 
-#include <btstack_run_loop.h>
 #include "hardware/adc.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/vreg.h"
-#include <pico/cyw43_arch.h>
-#include <pico/multicore.h>
-#include <pico/stdlib.h>
-#include <uni.h>
+#include "pico/stdlib.h"
 
 #include "endian.h"
-#include "gamecube.h"
 #include "hw.h"
 #include "picoboot.pio.h"
 #include "pio.h"
 #include "status_led.h"
 #include "version.h"
-
-struct uni_platform* get_my_platform(void);
-
-static void bluepad_core_task(void)
-{
-    if (cyw43_arch_init()) {
-        loge("failed to initialise cyw43_arch\n");
-        return;
-    }
-
-    uni_platform_set_custom(get_my_platform());
-
-    uni_init(0, NULL);
-
-    btstack_run_loop_execute();
-}
-
-static void gamecube_task(void)
-{
-    multicore_lockout_victim_init();
-    while (1) {
-        gamecube_comms_task();
-    }
-}
 
 extern const uint32_t __payload[];
 extern const uint32_t __payload_end[];
@@ -229,18 +200,11 @@ void main()
     pio_sm_unclaim(pio0, clocked_output_sm);
     pio_clear_instruction_memory(pio0);
 
-    if (s_board_type == HW_BOARD_TYPE_PICO_2_W) {
-        // Core 1 runs Bluepad32/BTstack (init will turn on the W LED).
-        multicore_launch_core1(bluepad_core_task);
+    // --- TEMPORARY DIAGNOSTIC BUILD: no Bluetooth, just idle ---
+    status_led_init(s_board_type);
+    status_led_on();
 
-        // Core 0 stays on joybus / GameCube emulation.
-        gamecube_task();
-    } else {
-        status_led_init(s_board_type);
-        status_led_on();
-
-        while (true) {
-            tight_loop_contents();
-        }
+    while (true) {
+        tight_loop_contents();
     }
 }
