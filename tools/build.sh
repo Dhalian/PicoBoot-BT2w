@@ -52,10 +52,7 @@ if [ ! -x "${PICOTOOL}" ]; then
 fi
 "${PICOTOOL}" uf2 convert "build/${board}/dist/picoboot.bin" "build/${board}/picoboot.uf2" --family rp2350-arm-s
 
-echo -e "\n🔨 ${YELLOW}Merging firmware + payload...${NC}"
-python3 "tools/merge_uf2_bt.py" \
-    "build/${board}/picoboot.uf2" \
-    "dist/payload_pico2.uf2" \
-    "dist/picoboot_bt2w_full.uf2"
+echo -e "\n🔨 ${YELLOW}Merging firmware + payload (via uf2tool, same tool the official PicoBoot release uses)...${NC}"
+uf2tool join -o dist/picoboot_bt2w_full.uf2 "build/${board}/picoboot.uf2" "dist/payload_pico2.uf2" --family "${family}"
 
 echo -e "\n✨ ${GREEN}Build finished! Output: dist/picoboot_bt2w_full.uf2${NC}\n"
