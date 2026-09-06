@@ -162,7 +162,7 @@ def main():
         else:
             family_ids = [0xE48BFF56, 0xE48BFF59]
 
-        out = pack_uf2(header + img, 0x10080000, family_ids)
+        out = pack_uf2(header + img, 0x100C0000, family_ids)  # must match FLASH region size in memmap_picoboot.ld (currently 768k)
 
     else:
         print("Unknown output format")
