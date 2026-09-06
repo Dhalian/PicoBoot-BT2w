@@ -215,3 +215,27 @@ int controller_config_list(controller_profile_t* out, int max_count)
     }
     return count;
 }
+
+typedef struct {
+    int slot;
+} erase_ctx_t;
+
+static void erase_slot_unsafe(void* param)
+{
+    erase_ctx_t* ctx = (erase_ctx_t*)param;
+    uint32_t offset = FLASH_CONFIG_OFFSET + (uint32_t)ctx->slot * FLASH_CONFIG_SLOT_SIZE;
+    flash_range_erase(offset, FLASH_CONFIG_SLOT_SIZE);
+}
+
+bool controller_config_delete_by_suffix(const uint8_t suffix[3])
+{
+    for (int i = 0; i < CONTROLLER_CONFIG_MAX_SLOTS; i++) {
+        slot_record_t rec;
+        if (slot_is_valid(i, &rec) && memcmp(&rec.profile.mac[3], suffix, 3) == 0) {
+            erase_ctx_t ctx = {.slot = i};
+            int rc = flash_safe_execute(erase_slot_unsafe, &ctx, 1000);
+            return rc == PICO_OK;
+        }
+    }
+    return false;
+}
