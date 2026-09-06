@@ -69,4 +69,10 @@ bool controller_config_save(const controller_profile_t* profile);
 // USB config-drive (msc_disk.c) to build its virtual file listing.
 int controller_config_list(controller_profile_t* out, int max_count);
 
+// Erases the stored profile whose MAC ends with these 3 bytes (matching
+// what's shown in the .cfg filename on the USB drive, e.g. "25AD66").
+// The controller will get a brand new default profile the next time it
+// connects. Returns false if no matching profile was found.
+bool controller_config_delete_by_suffix(const uint8_t suffix[3]);
+
 #endif // CONTROLLER_CONFIG_H
