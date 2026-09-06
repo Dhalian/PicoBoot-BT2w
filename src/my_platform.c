@@ -15,6 +15,7 @@
 
 #include "sdkconfig.h"
 #include "intercore.h"
+#include "controller_config.h"
 
 // Bluepad32 v4.x removed the "safe_platform_hook" callback from the platform
 // struct. Periodic code on the BT thread (core 1) is now scheduled with a
@@ -34,6 +35,11 @@ typedef struct
     bool connected;
     bool led_set;
     uni_hid_device_t *device_ptr;
+    uint8_t gc_port;   // which GameCube port (0=P1..3=P4) this connection drives
+    int8_t  remap_a;   // per-controller button remap, loaded from its saved profile
+    int8_t  remap_b;
+    int8_t  remap_x;
+    int8_t  remap_y;
 } my_playform_player_s;
 
 my_playform_player_s _players[4] = {0};
@@ -51,14 +57,14 @@ static void my_platform_init(int argc, const char** argv) {
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
     logi("my_platform: init()\n");
 
-    uni_gamepad_mappings_t mappings = GAMEPAD_DEFAULT_MAPPINGS;
-    // Invert A & B
-    mappings.button_a = UNI_GAMEPAD_MAPPINGS_BUTTON_B;
-    mappings.button_b = UNI_GAMEPAD_MAPPINGS_BUTTON_A;
-    mappings.button_x = UNI_GAMEPAD_MAPPINGS_BUTTON_Y;
-    mappings.button_y = UNI_GAMEPAD_MAPPINGS_BUTTON_X;
-    uni_gamepad_set_mappings(&mappings);
+    controller_config_init();
+
+    // No global button mapping here anymore -- each controller gets its
+    // own remap (defaulting to identity/no swap) from its saved profile,
+    // applied per-device in my_platform_on_controller_data(). This is
+    // what makes different controllers able to have different mappings.
 }
+
 
 static void my_platform_on_init_complete(void) {
     logi("my_platform: on_init_complete()\n");
@@ -92,15 +98,27 @@ static void my_platform_on_device_connected(uni_hid_device_t* d) {
     //logi("my_platform: device connected: %p\n", d);
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
     static intercore_msg_s core1playermsg = {.id = IC_MSG_CONNECT};
-    
+
     switch(idx)
     {
         case 0 ... 3:
+        {
+            controller_profile_t profile;
+            const char* model_name = (d->name[0] != '\0') ? d->name : "Unknown controller";
+            controller_config_get_or_create(d->conn.btaddr, model_name, &profile);
+
             _players[idx].connected = true;
             _players[idx].device_ptr = d;
             _players[idx].led_set = false;
-            core1playermsg.data = idx;
+            _players[idx].gc_port = profile.gc_port;
+            _players[idx].remap_a = profile.remap_a;
+            _players[idx].remap_b = profile.remap_b;
+            _players[idx].remap_x = profile.remap_x;
+            _players[idx].remap_y = profile.remap_y;
+
+            core1playermsg.data = _players[idx].gc_port;
             core0_send_message_safe(&core1playermsg);
+        }
         break;
 
         default:
@@ -113,11 +131,11 @@ static void my_platform_on_device_disconnected(uni_hid_device_t* d) {
     //logi("my_platform: device connected: %p\n", d);
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
     static intercore_msg_s core1playermsg = {.id = IC_MSG_DISCONNECT};
-    
+
     switch(idx)
     {
         case 0 ... 3:
-            core1playermsg.data = idx;
+            core1playermsg.data = _players[idx].gc_port;
             core0_send_message_safe(&core1playermsg);
             _players[idx].connected = false;
             _players[idx].led_set = false;
@@ -127,6 +145,7 @@ static void my_platform_on_device_disconnected(uni_hid_device_t* d) {
         default:
         // Do nothing for other cases
         break;
+
     }
 }
 
@@ -137,17 +156,31 @@ static uni_error_t my_platform_on_device_ready(uni_hid_device_t* d) {
     return UNI_ERROR_SUCCESS;
 }
 
-void _my_platform_process_rumble(uint8_t idx, bool rumble)
+void _my_platform_process_rumble(uint8_t gc_port, bool rumble)
 {
     bool state = rumble;
-    uni_hid_device_t *d = _players[idx].device_ptr;
+
+    // gc_port (which GameCube controller port, 0=P1..3=P4) is no longer
+    // guaranteed to be the same number as the Bluepad32 connection slot
+    // (a saved profile can reassign a controller to a different port),
+    // so look up which _players[] entry currently drives this port.
+    int slot = -1;
+    for (int i = 0; i < 4; i++) {
+        if (_players[i].connected && _players[i].gc_port == gc_port) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) return;
+
+    uni_hid_device_t *d = _players[slot].device_ptr;
 
     // Short-circuit (||) is required here: if the player isn't connected,
     // 'd' may be NULL (never connected) or a dangling pointer to a device
     // Bluepad32 has already freed/reused (just disconnected). The original
     // bitwise '|' evaluated both sides unconditionally, dereferencing 'd'
     // even when it was invalid.
-    if (!_players[idx].connected || d == NULL || d->report_parser.play_dual_rumble == NULL) return;
+    if (!_players[slot].connected || d == NULL || d->report_parser.play_dual_rumble == NULL) return;
 
     if(state)
     d->report_parser.play_dual_rumble(d, 0, 32, 128, 40);
@@ -157,15 +190,18 @@ void _my_platform_process_rumble(uint8_t idx, bool rumble)
 
 static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t* ctl) {
     uni_gamepad_t* gp;
-    
+
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
+    uint8_t gc_port = _players[idx].gc_port;
 
     if(!_players[idx].led_set && (d->report_parser.set_player_leds!=NULL))
     {
-        // Set player LEDs
+        // Set player LEDs -- lit according to the GameCube port, not the
+        // raw Bluepad32 connection slot, so it matches what's printed on
+        // the console screen (P1/P2/P3/P4).
         if(d->report_parser.set_player_leds != NULL)
         {
-            d->report_parser.set_player_leds(d, ((1<<idx)&0xF));
+            d->report_parser.set_player_leds(d, ((1<<gc_port)&0xF));
             _players[idx].led_set = true;
         }
         
@@ -176,15 +212,30 @@ static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t
         case UNI_CONTROLLER_CLASS_GAMEPAD:
 
             gp = &ctl->gamepad;
-            bool a = gp->buttons & BUTTON_A;
-            bool b = gp->buttons & BUTTON_B;
-            bool x = gp->buttons & BUTTON_X;
-            bool y = gp->buttons & BUTTON_Y;
 
-            switch(d->controller_type)
+            // Per-controller button remap, loaded from this device's saved
+            // profile (controller_config.h). Defaults to identity (no
+            // change) unless the profile says otherwise -- this replaces
+            // both the old global mapping and the old Xbox-specific swap,
+            // since either controller-brand-based approach can't give two
+            // different controllers two different mappings.
             {
-                default:
-                break;
+                bool physical[4];
+                physical[REMAP_BUTTON_A] = gp->buttons & BUTTON_A;
+                physical[REMAP_BUTTON_B] = gp->buttons & BUTTON_B;
+                physical[REMAP_BUTTON_X] = gp->buttons & BUTTON_X;
+                physical[REMAP_BUTTON_Y] = gp->buttons & BUTTON_Y;
+
+                int8_t ra = _players[idx].remap_a;
+                int8_t rb = _players[idx].remap_b;
+                int8_t rx = _players[idx].remap_x;
+                int8_t ry = _players[idx].remap_y;
+
+                gp->buttons &= ~(BUTTON_A | BUTTON_B | BUTTON_X | BUTTON_Y);
+                gp->buttons |= physical[ra == REMAP_DEFAULT ? REMAP_BUTTON_A : ra] ? BUTTON_A : 0;
+                gp->buttons |= physical[rb == REMAP_DEFAULT ? REMAP_BUTTON_B : rb] ? BUTTON_B : 0;
+                gp->buttons |= physical[rx == REMAP_DEFAULT ? REMAP_BUTTON_X : rx] ? BUTTON_X : 0;
+                gp->buttons |= physical[ry == REMAP_DEFAULT ? REMAP_BUTTON_Y : ry] ? BUTTON_Y : 0;
             }
 
             // Send intercore message for input update
@@ -201,7 +252,7 @@ static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t
             inputmsg.gp.buttons         = gp->buttons;
             inputmsg.gp.misc_buttons    = gp->misc_buttons;
 
-            inputmsg.data = (idx&3) | (inputcounter<<2);
+            inputmsg.data = (gc_port&3) | (inputcounter<<2);
             core0_send_message_safe(&inputmsg);
             inputcounter = (inputcounter+1) % 0b111111;
 

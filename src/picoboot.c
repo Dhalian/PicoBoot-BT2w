@@ -24,6 +24,7 @@
 #include "picoboot.pio.h"
 #include "pio.h"
 #include "status_led.h"
+#include "usb_composite.h"
 #include "version.h"
 
 struct uni_platform* get_my_platform(void);
@@ -46,6 +47,11 @@ static void gamecube_task(void)
 {
     multicore_lockout_victim_init();
     while (1) {
+        // Service USB (our debug console + the config drive) from core 0,
+        // interleaved with GameCube controller polling. tud_task() must
+        // only ever be called from one place -- this replaces the
+        // automatic background IRQ that pico_stdio_usb used to install.
+        tud_task();
         gamecube_comms_task();
     }
 }
@@ -95,7 +101,7 @@ void main()
 
     size_t payload_size = validate_payload();
     if (payload_size == SIZE_MAX) {
-        stdio_init_all();
+        usb_cdc_stdio_init();
         adc_init();
         s_board_type = hw_detect_board_type();
         printf("PicoBoot: Invalid payload. Entering infinite loop.\n");
@@ -180,7 +186,8 @@ void main()
 
     // ---- Time-critical section ends here ----
 
-    stdio_init_all();
+    usb_cdc_stdio_init();
+    msc_disk_init();
     adc_init();
     s_board_type = hw_detect_board_type();
 

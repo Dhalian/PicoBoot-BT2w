@@ -38,6 +38,10 @@ add_executable(picoboot
         src/gamecube.c
         src/intercore.c
         src/my_platform.c
+        src/controller_config.c
+        src/usb_descriptors.c
+        src/usb_cdc_stdio.c
+        src/msc_disk.c
 )
 
 pico_generate_pio_header(picoboot
@@ -56,7 +60,10 @@ pico_set_program_url(picoboot "https://github.com/webhdx/PicoBoot")
 target_link_options(pico_standard_link INTERFACE "LINKER:--script=${CMAKE_CURRENT_LIST_DIR}/memmap_picoboot.ld")
 
 pico_enable_stdio_uart(picoboot 0)
-pico_enable_stdio_usb(picoboot 1)
+# NOTE: pico_enable_stdio_usb() is intentionally NOT used here -- it bakes
+# in its own fixed CDC-only USB descriptors, which would collide with our
+# own composite CDC+MSC descriptors (usb_descriptors.c). See
+# usb_cdc_stdio.c for the replacement printf-over-USB glue.
 
 target_include_directories(picoboot PRIVATE
         src
@@ -74,6 +81,10 @@ target_link_libraries(picoboot PRIVATE
         hardware_adc
         hardware_dma
         hardware_pio
+        hardware_flash
+        pico_flash
+        pico_unique_id
+        tinyusb_device
         pico_cyw43_arch_none
         pico_btstack_classic
         pico_btstack_cyw43
