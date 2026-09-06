@@ -291,7 +291,6 @@ static err_t on_accept(void* arg, struct tcp_pcb* newpcb, err_t err)
 
     tcp_arg(newpcb, cs);
     tcp_recv(newpcb, on_recv);
-    tcp_priority(newpcb, TCP_PRIO_MIN);
 
     return ERR_OK;
 }
