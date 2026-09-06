@@ -1,7 +1,5 @@
 cmake_minimum_required(VERSION 3.13)
 
-# PICO_BOARD should be set to 'pico2_w' (the only supported target), or not
-# set at all (which then defaults to 'pico2_w').
 if(DEFINED PICO_BOARD AND NOT ${PICO_BOARD} STREQUAL "pico2_w")
     message(FATAL_ERROR "PICO_BOARD must be set to 'pico2_w' or not set at all")
 else()
@@ -13,17 +11,14 @@ set(CMAKE_CXX_STANDARD 17)
 
 include(cmake/extract_version.cmake)
 
-# Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
 project(picoboot LANGUAGES C CXX ASM VERSION ${PROJECT_VERSION_STRING})
 
 set(BLUEPAD32_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/bluepad32)
 
-# Use the BTstack bundled with the Pico SDK (RFC: pico_btstack_classic).
 set(PICO_BTSTACK_PATH ${PICO_SDK_PATH}/lib/btstack)
 
-# Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/dist)
@@ -42,6 +37,9 @@ add_executable(picoboot
         src/usb_descriptors.c
         src/usb_cdc_stdio.c
         src/msc_disk.c
+        src/json_util.c
+        src/http_server.c
+        src/wifi_creds.c
 )
 
 pico_generate_pio_header(picoboot
@@ -60,22 +58,14 @@ pico_set_program_url(picoboot "https://github.com/webhdx/PicoBoot")
 target_link_options(pico_standard_link INTERFACE "LINKER:--script=${CMAKE_CURRENT_LIST_DIR}/memmap_picoboot.ld")
 
 pico_enable_stdio_uart(picoboot 0)
-# NOTE: pico_enable_stdio_usb() is intentionally NOT used here -- it bakes
-# in its own fixed CDC-only USB descriptors, which would collide with our
-# own composite CDC+MSC descriptors (usb_descriptors.c). See
-# usb_cdc_stdio.c for the replacement printf-over-USB glue.
 
 target_include_directories(picoboot PRIVATE
         src
+        ${CMAKE_CURRENT_LIST_DIR}
         ${BLUEPAD32_ROOT}/src/components/bluepad32/include)
 
-# Needed for btstack_config.h / sdkconfig.h so that libbluepad32 can include
-# them.
 include_directories(picoboot src)
 include_directories(${PICO_BTSTACK_PATH}/src)
-
-# Hack: The default search-path lookup for these headers must pick our project
-# copies. It works in the upstream examples, so keep the ordering the same.
 
 target_link_libraries(picoboot PRIVATE
         hardware_adc
@@ -85,7 +75,7 @@ target_link_libraries(picoboot PRIVATE
         pico_flash
         pico_unique_id
         tinyusb_device
-        pico_cyw43_arch_none
+        pico_cyw43_arch_lwip_threadsafe_background
         pico_btstack_classic
         pico_btstack_cyw43
         pico_multicore
@@ -95,8 +85,6 @@ target_link_libraries(picoboot PRIVATE
 
 add_subdirectory(${BLUEPAD32_ROOT}/src/components/bluepad32 libbluepad32)
 
-# Our firmware target uses the same BTstack symbols without ambiguity, but the
-# default btstack_config.h must be ours, so keep src ahead of the SDK headers.
 include_directories(picoboot src)
 
 pico_add_extra_outputs(picoboot)
