@@ -7,20 +7,48 @@
 #include <stdio.h>
 #include <tusb.h>
 
+#include <btstack_run_loop.h>
 #include "hardware/adc.h"
 #include "hardware/clocks.h"
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/bus_ctrl.h"
-#include "hardware/vreg.h"
-#include "pico/stdlib.h"
+#include <pico/cyw43_arch.h>
+#include <pico/multicore.h>
+#include <pico/stdlib.h>
+#include <uni.h>
 
 #include "endian.h"
+#include "gamecube.h"
 #include "hw.h"
 #include "picoboot.pio.h"
 #include "pio.h"
 #include "status_led.h"
 #include "version.h"
+
+struct uni_platform* get_my_platform(void);
+
+static void bluepad_core_task(void)
+{
+    if (cyw43_arch_init()) {
+        loge("failed to initialise cyw43_arch\n");
+        return;
+    }
+
+    uni_platform_set_custom(get_my_platform());
+
+    uni_init(0, NULL);
+
+    btstack_run_loop_execute();
+}
+
+static void gamecube_task(void)
+{
+    multicore_lockout_victim_init();
+    while (1) {
+        gamecube_comms_task();
+    }
+}
 
 extern const uint32_t __payload[];
 extern const uint32_t __payload_end[];
@@ -59,15 +87,17 @@ bad:
 
 void main()
 {
-    stdio_init_all();
-    adc_init();
-    s_board_type = hw_detect_board_type();
-
-    printf("PicoBoot (%s) by webhdx (c) 2025\n", FW_VER_STRING);
-    printf("Board Type: %s\n", hw_board_type_to_string(s_board_type));
+    // ---- Time-critical section starts here ----
+    //
+    // Arm the injection PIO/DMA before touching stdio_init_all() (USB)
+    // or adc_init() (board detection) -- see PicoBoot v0.3.1, which never
+    // showed the "boots to stock menu" bug and does the same thing.
 
     size_t payload_size = validate_payload();
     if (payload_size == SIZE_MAX) {
+        stdio_init_all();
+        adc_init();
+        s_board_type = hw_detect_board_type();
         printf("PicoBoot: Invalid payload. Entering infinite loop.\n");
         status_led_init(s_board_type);
 
@@ -76,15 +106,6 @@ void main()
             status_led_toggle();
         }
     }
-
-#if defined(PICO_RP2350)
-    // Small extra core-voltage margin on RP2350 before overclocking to
-    // 250MHz. Community overclocking data suggests 250MHz is comfortably
-    // stable even at the default 1.10V on RP2350, so this is a low-cost
-    // safety margin rather than a proven fix -- kept modest on purpose.
-    vreg_set_voltage(VREG_VOLTAGE_1_15);
-    sleep_ms(10);
-#endif
 
     // Set 250MHz clock to get more cycles in between CLK pulses.
     // This is the lowest value I was able to make the code work.
@@ -102,7 +123,7 @@ void main()
     //
     // State Machine: Transfer Start
     //
-    // Counts all consecutive transfers and sets IRQ 
+    // Counts all consecutive transfers and sets IRQ
     // when first 1 kilobyte transfer starts.
     //
 
@@ -118,7 +139,7 @@ void main()
 
     //
     // State Machine: Clocked Output
-    // 
+    //
     // It waits for IRQ signal from first SM and samples clock signal
     // to output IPL data bits.
     //
@@ -128,7 +149,7 @@ void main()
 
     clocked_output_program_init(pio, clocked_output_sm, clocked_output_offset, PIN_DI, PIN_CLK, PIN_CS);
 
-    pio_sm_put(pio, clocked_output_sm, 8191); // 8192 bits, 1024 bytes, minus 1 because counting starts from 0 
+    pio_sm_put(pio, clocked_output_sm, 8191); // 8192 bits, 1024 bytes, minus 1 because counting starts from 0
     pio_sm_exec(pio, clocked_output_sm, pio_encode_pull(true, true));
     pio_sm_exec(pio, clocked_output_sm, pio_encode_mov(pio_y, pio_osr));
     pio_sm_exec(pio, clocked_output_sm, pio_encode_out(pio_null, 32));
@@ -152,47 +173,26 @@ void main()
         true // start immediately
     );
 
-    // Start PIO state machines
+    // Start PIO state machines. Earliest point the console can be
+    // intercepted -- everything below is no longer time-critical.
     pio_sm_set_enabled(pio, transfer_start_sm, true);
     pio_sm_set_enabled(pio, clocked_output_sm, true);
 
+    // ---- Time-critical section ends here ----
+
+    stdio_init_all();
+    adc_init();
+    s_board_type = hw_detect_board_type();
+
+    printf("PicoBoot (%s) by webhdx (c) 2025\n", FW_VER_STRING);
+    printf("Board Type: %s\n", hw_board_type_to_string(s_board_type));
     printf("PicoBoot: Finished injecting payload.\n");
 
     // ---- Bluepad32 / GameCube Bluetooth glue (ends here at boot) ----
 
-    // Wait for the injection to actually complete instead of a blind fixed
-    // delay. Some consoles take noticeably longer than others to reach the
-    // point in their boot sequence where they request the IPL font over
-    // CS/CLK/DI -- a fixed 800ms window can tear the PIO/DMA engines down
-    // before the console has even asked for the data, silently killing the
-    // injection every single time on affected units. We instead poll the
-    // DMA channel and only proceed once it reports the transfer is done
-    // (or after a generous 5 second safety timeout, so we never hang here
-    // forever if something is wired wrong).
-    absolute_time_t injection_deadline = make_timeout_time_ms(5000);
-    while (dma_channel_is_busy(chan) && !time_reached(injection_deadline)) {
-        tight_loop_contents();
-    }
-
-    bool injection_completed = !dma_channel_is_busy(chan);
-
-    if (injection_completed) {
-        printf("PicoBoot: Injection confirmed complete.\n");
-    } else {
-        printf("PicoBoot: Warning - injection did not complete within 5s, "
-               "proceeding anyway.\n");
-    }
-
-    // ---- Temporary diagnostic pin (remove once the real issue is found) ----
-    // GPIO3 is unused by this install's wiring. Steady 3.3V = the DMA
-    // transfer finished (the console's CS pulses were seen and matched).
-    // Steady 0V = we hit the 5s timeout above without ever seeing them.
-    // Check with a multimeter (GPIO3 to GND) right after a normal power-on,
-    // no PC/USB required.
-    #define PIN_DEBUG_RESULT 3
-    gpio_init(PIN_DEBUG_RESULT);
-    gpio_set_dir(PIN_DEBUG_RESULT, GPIO_OUT);
-    gpio_put(PIN_DEBUG_RESULT, injection_completed ? 1 : 0);
+    // Let the console complete the IPL injection before the PIO/DMA engines
+    // are torn down and reclaimed for the joybus emulation.
+    sleep_ms(800);
 
     pio_sm_set_enabled(pio0, transfer_start_sm, false);
     pio_sm_set_enabled(pio0, clocked_output_sm, false);
@@ -200,11 +200,18 @@ void main()
     pio_sm_unclaim(pio0, clocked_output_sm);
     pio_clear_instruction_memory(pio0);
 
-    // --- TEMPORARY DIAGNOSTIC BUILD: no Bluetooth, just idle ---
-    status_led_init(s_board_type);
-    status_led_on();
+    if (s_board_type == HW_BOARD_TYPE_PICO_2_W) {
+        // Core 1 runs Bluepad32/BTstack (init will turn on the W LED).
+        multicore_launch_core1(bluepad_core_task);
 
-    while (true) {
-        tight_loop_contents();
+        // Core 0 stays on joybus / GameCube emulation.
+        gamecube_task();
+    } else {
+        status_led_init(s_board_type);
+        status_led_on();
+
+        while (true) {
+            tight_loop_contents();
+        }
     }
 }

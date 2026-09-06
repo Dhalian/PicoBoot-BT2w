@@ -185,16 +185,6 @@ static void my_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t
             {
                 default:
                 break;
-                
-                case k_eControllerType_XBox360Controller:
-                case k_eControllerType_XBoxOneController:
-                #define BUTTON_SUBTRACT_MASK ~(BUTTON_A | BUTTON_B | BUTTON_X | BUTTON_Y)
-                gp->buttons &= 0b11110000;
-                gp->buttons |= (a) ? BUTTON_B : 0;
-                gp->buttons |= (b) ? BUTTON_A : 0;
-                gp->buttons |= (x) ? BUTTON_Y : 0;
-                gp->buttons |= (y) ? BUTTON_X : 0;
-                break;
             }
 
             // Send intercore message for input update
