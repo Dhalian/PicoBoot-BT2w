@@ -70,7 +70,7 @@ jobs:
         env:
           PICO_SDK_PATH: "${{ runner.home }}/pico-sdk"
         run: |
-          tools/build.sh
+          bash tools/build.sh
 
       - name: Check firmware size (must be < 512 KB)
         run: |
