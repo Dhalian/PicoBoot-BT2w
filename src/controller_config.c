@@ -239,3 +239,17 @@ bool controller_config_delete_by_suffix(const uint8_t suffix[3])
     }
     return false;
 }
+
+
+bool controller_config_delete_by_mac(const uint8_t mac[6])
+{
+    for (int i = 0; i < CONTROLLER_CONFIG_MAX_SLOTS; i++) {
+        slot_record_t rec;
+        if (slot_is_valid(i, &rec) && memcmp(rec.profile.mac, mac, 6) == 0) {
+            erase_ctx_t ctx = {.slot = i};
+            int rc = flash_safe_execute(erase_slot_unsafe, &ctx, 1000);
+            return rc == PICO_OK;
+        }
+    }
+    return false;
+}
