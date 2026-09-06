@@ -38,12 +38,11 @@ jobs:
             python3 \
             git \
             build-essential \
-            erlang
+            erlang \
+            rebar3
 
       - name: Build uf2tool (same merge tool the official PicoBoot release uses)
         run: |
-          wget -q https://s3.amazonaws.com/rebar3/rebar3 -O /usr/local/bin/rebar3
-          chmod +x /usr/local/bin/rebar3
           git clone --depth 1 https://github.com/pguyot/uf2tool.git "$HOME/uf2tool"
           cd "$HOME/uf2tool"
           rebar3 escriptize
