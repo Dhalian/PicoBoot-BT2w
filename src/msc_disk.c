@@ -1,22 +1,26 @@
 /**
  * msc_disk.c
  *
- * STEP 2 of the USB config-drive feature: the virtual disk now reflects
- * the REAL controller profiles stored in flash (controller_config.c).
- * Each known controller becomes one .cfg file (JSON content), named
- * after the last 3 bytes of its Bluetooth address (plain FAT 8.3 names
- * only support 8 characters, so the full 6-byte address doesn't fit
- * without also implementing VFAT long filenames).
+ * STEP 3 of the USB config-drive feature: files are now WRITABLE. Edit a
+ * .cfg file's "port" or "remap" fields in a text editor and save -- the
+ * change gets parsed and persisted to the controller's flash profile
+ * immediately.
  *
- * Read-only for now (step 3 will add write support so edits made in a
- * text editor / the future web page get saved back to flash). The
- * snapshot of files is built once, at boot (msc_disk_init) -- a
- * controller that pairs for the first time later in the same session
- * won't show up until the next reboot/replug. Good enough for now;
- * can be revisited later if that turns out to be annoying in practice.
+ * This is a small hand-written JSON *field* extractor, not a general
+ * JSON parser: it looks for the exact "port" and "remap" keys our own
+ * generator produces and reads their values, ignoring everything else.
+ * That's deliberate -- a real parser would be a lot more code for very
+ * little benefit here, since the only thing writing these files is
+ * either us or a human editing our own generated format.
+ *
+ * Known limitation: only writes that land at sector offset 0 are
+ * processed (i.e. the whole file rewritten in one write, which is what
+ * text editors do for files this small). A write split across multiple
+ * calls at different offsets is simply accepted without effect.
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "tusb.h"
@@ -28,6 +32,7 @@
 
 typedef struct {
     char     short_name[11]; // 8.3 padded, no dot
+    uint8_t  mac[6];         // which controller this file represents
     uint32_t size;
     char     content[384];
 } virtual_file_t;
@@ -75,6 +80,15 @@ static const char* remap_name(int8_t r)
     }
 }
 
+static int8_t parse_remap_value(const char* val)
+{
+    if (strcmp(val, "A") == 0) return REMAP_BUTTON_A;
+    if (strcmp(val, "B") == 0) return REMAP_BUTTON_B;
+    if (strcmp(val, "X") == 0) return REMAP_BUTTON_X;
+    if (strcmp(val, "Y") == 0) return REMAP_BUTTON_Y;
+    return REMAP_DEFAULT; // "default" or anything unrecognized
+}
+
 static void build_short_name(const uint8_t mac[6], char out11[11])
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -104,6 +118,33 @@ static void fat12_set_entry(uint8_t* fat, int cluster, uint16_t value)
     }
 }
 
+// Renders a profile's JSON content into s_files[file_index] and updates
+// the matching root directory entry's size field. Does NOT touch the
+// FAT chain or short name -- those are fixed at creation time.
+static void refresh_file_content(int file_index, const controller_profile_t* profile)
+{
+    int len = snprintf(s_files[file_index].content, sizeof(s_files[file_index].content),
+        "{\r\n"
+        "  \"mac\": \"%02X:%02X:%02X:%02X:%02X:%02X\",\r\n"
+        "  \"model\": \"%s\",\r\n"
+        "  \"port\": %d,\r\n"
+        "  \"remap\": {\"a\": \"%s\", \"b\": \"%s\", \"x\": \"%s\", \"y\": \"%s\"}\r\n"
+        "}\r\n",
+        profile->mac[0], profile->mac[1], profile->mac[2],
+        profile->mac[3], profile->mac[4], profile->mac[5],
+        profile->model_name,
+        profile->gc_port + 1, // shown as 1-based P1..P4
+        remap_name(profile->remap_a), remap_name(profile->remap_b),
+        remap_name(profile->remap_x), remap_name(profile->remap_y));
+
+    if (len < 0) len = 0;
+    if ((size_t)len >= sizeof(s_files[file_index].content)) len = sizeof(s_files[file_index].content) - 1;
+    s_files[file_index].size = (uint32_t)len;
+
+    uint8_t* entry = &s_root_dir[file_index * 32];
+    memcpy(&entry[28], &s_files[file_index].size, 4);
+}
+
 void msc_disk_init(void)
 {
     controller_config_init();
@@ -124,34 +165,18 @@ void msc_disk_init(void)
 
     for (int i = 0; i < s_file_count; i++) {
         build_short_name(profiles[i].mac, s_files[i].short_name);
-
-        int len = snprintf(s_files[i].content, sizeof(s_files[i].content),
-            "{\r\n"
-            "  \"mac\": \"%02X:%02X:%02X:%02X:%02X:%02X\",\r\n"
-            "  \"model\": \"%s\",\r\n"
-            "  \"port\": %d,\r\n"
-            "  \"remap\": {\"a\": \"%s\", \"b\": \"%s\", \"x\": \"%s\", \"y\": \"%s\"}\r\n"
-            "}\r\n",
-            profiles[i].mac[0], profiles[i].mac[1], profiles[i].mac[2],
-            profiles[i].mac[3], profiles[i].mac[4], profiles[i].mac[5],
-            profiles[i].model_name,
-            profiles[i].gc_port + 1, // shown as 1-based P1..P4
-            remap_name(profiles[i].remap_a), remap_name(profiles[i].remap_b),
-            remap_name(profiles[i].remap_x), remap_name(profiles[i].remap_y));
-
-        if (len < 0) len = 0;
-        if ((size_t)len >= sizeof(s_files[i].content)) len = sizeof(s_files[i].content) - 1;
-        s_files[i].size = (uint32_t)len;
+        memcpy(s_files[i].mac, profiles[i].mac, 6);
 
         int cluster = 2 + i;
         fat12_set_entry(s_fat_table, cluster, 0xFFF); // single-cluster file, end-of-chain
 
         uint8_t* entry = &s_root_dir[i * 32];
         memcpy(entry, s_files[i].short_name, 11);
-        entry[11] = 0x20; // Attribute: archive (writable -- step 3 will need this)
+        entry[11] = 0x20; // Attribute: archive (writable)
         entry[26] = (uint8_t)(cluster & 0xFF);
         entry[27] = (uint8_t)((cluster >> 8) & 0xFF);
-        memcpy(&entry[28], &s_files[i].size, 4);
+
+        refresh_file_content(i, &profiles[i]);
     }
 }
 
@@ -220,15 +245,105 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buff
     return (int32_t)bufsize;
 }
 
-// Still read-only in step 2 -- accept writes silently without storing
-// anything, so the OS doesn't think the drive is faulty. Step 3 will
-// parse and persist real edits here.
+// Extracts a top-level "key": value integer from a small JSON blob.
+// Returns the value, or 'fallback' if the key wasn't found/parseable.
+static int json_extract_int(const char* json, const char* key, int fallback)
+{
+    char pattern[24];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char* p = strstr(json, pattern);
+    if (!p) return fallback;
+    p = strchr(p, ':');
+    if (!p) return fallback;
+    p++;
+    while (*p == ' ') p++;
+    return atoi(p);
+}
+
+// Extracts a "key": "string value" from a JSON blob, searching only
+// within the first 'scope_len' bytes of 'json' (so remap's "a"/"b"/"x"/"y"
+// keys don't accidentally match something unrelated elsewhere).
+static bool json_extract_string_scoped(const char* json, size_t scope_len, const char* key,
+                                        char* out, size_t out_size)
+{
+    char pattern[8];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    size_t pattern_len = strlen(pattern);
+
+    for (size_t i = 0; i + pattern_len <= scope_len; i++) {
+        if (memcmp(json + i, pattern, pattern_len) != 0) continue;
+
+        const char* p = json + i + pattern_len;
+        const char* end = json + scope_len;
+        while (p < end && *p != ':') p++;
+        if (p >= end) return false;
+        p++;
+        while (p < end && *p == ' ') p++;
+        if (p >= end || *p != '"') return false;
+        p++;
+
+        size_t n = 0;
+        while (p < end && *p != '"' && n < out_size - 1) {
+            out[n++] = *p++;
+        }
+        out[n] = '\0';
+        return true;
+    }
+    return false;
+}
+
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize)
 {
     (void)lun;
-    (void)lba;
-    (void)offset;
-    (void)buffer;
+
+    int file_index = (int)lba - 3;
+    if (file_index >= 0 && file_index < s_file_count && offset == 0) {
+        char content[DISK_BLOCK_SIZE + 1];
+        size_t len = bufsize;
+        if (len > DISK_BLOCK_SIZE) len = DISK_BLOCK_SIZE;
+        memcpy(content, buffer, len);
+        content[len] = '\0';
+
+        // Only bother if this actually looks like our JSON (cheap sanity
+        // check -- ignores stray writes from filesystem housekeeping).
+        if (strstr(content, "\"port\"") != NULL) {
+            controller_profile_t profile;
+            if (controller_config_get_or_create(s_files[file_index].mac, NULL, &profile)) {
+                int port_1based = json_extract_int(content, "port", profile.gc_port + 1);
+                if (port_1based >= 1 && port_1based <= 4) {
+                    profile.gc_port = (uint8_t)(port_1based - 1);
+                }
+
+                const char* remap_obj = strstr(content, "\"remap\"");
+                if (remap_obj) {
+                    size_t remap_scope_len = strlen(remap_obj);
+                    char val[16];
+                    if (json_extract_string_scoped(remap_obj, remap_scope_len, "a", val, sizeof(val)))
+                        profile.remap_a = parse_remap_value(val);
+                    if (json_extract_string_scoped(remap_obj, remap_scope_len, "b", val, sizeof(val)))
+                        profile.remap_b = parse_remap_value(val);
+                    if (json_extract_string_scoped(remap_obj, remap_scope_len, "x", val, sizeof(val)))
+                        profile.remap_x = parse_remap_value(val);
+                    if (json_extract_string_scoped(remap_obj, remap_scope_len, "y", val, sizeof(val)))
+                        profile.remap_y = parse_remap_value(val);
+                }
+
+                if (controller_config_save(&profile)) {
+                    printf("Config drive: saved changes for %02X:%02X:%02X:%02X:%02X:%02X "
+                           "(port=P%d, remap a=%s b=%s x=%s y=%s)\n",
+                        profile.mac[0], profile.mac[1], profile.mac[2],
+                        profile.mac[3], profile.mac[4], profile.mac[5],
+                        profile.gc_port + 1,
+                        remap_name(profile.remap_a), remap_name(profile.remap_b),
+                        remap_name(profile.remap_x), remap_name(profile.remap_y));
+                    refresh_file_content(file_index, &profile);
+                } else {
+                    printf("Config drive: failed to save changes (flash write error)\n");
+                }
+            }
+        }
+    }
+
     return (int32_t)bufsize;
 }
 
