@@ -74,7 +74,6 @@ void clocked_output_program_init(PIO pio, uint sm, uint offset, uint data_pin, u
 
     // Run at full system clock
     sm_config_set_clkdiv(&c, 1.f);
-    //
 
     pio_sm_init(pio, sm, offset, &c);
 }

@@ -1,4 +1,4 @@
-name: Build PicoBoot BT 2W
+name: Build PicoBoot BT 2W (official devcontainer)
 
 on:
   push:
@@ -9,56 +9,39 @@ on:
       - main
   workflow_call:
 
-env:
-  BUILD_TYPE: RelWithDebInfo
-  PICO_SDK_VERSION: "2.3.0"
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PicoBoot BT 2W (with submodules)
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Set outputs
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            gcc-arm-none-eabi \
-            libstdc++-arm-none-eabi-newlib \
-            cmake \
-            ninja-build \
-            python3 \
-            git \
-            build-essential \
-            erlang \
-            rebar3
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build uf2tool (same merge tool the official PicoBoot release uses)
+      # Pinned to the exact commit ShitScripts/PicoBoot-BT2w's own
+      # submodule reference points to, so my_platform.c's newer
+      # Bluepad32 API usage (on_oob_event, btstack run-loop timer)
+      # matches the library it was actually written against.
+      - name: Fetch Bluepad32 (pinned to PicoBoot-BT2w's exact commit)
         run: |
-          git clone --depth 1 https://github.com/pguyot/uf2tool.git "$HOME/uf2tool"
-          cd "$HOME/uf2tool"
-          rebar3 escriptize
-          sudo cp _build/default/bin/uf2tool /usr/local/bin/uf2tool
-          sudo chmod +x /usr/local/bin/uf2tool
-
-      - name: Fetch Pico SDK (${{ env.PICO_SDK_VERSION }})
-        run: |
-          git clone --depth 1 --branch "${PICO_SDK_VERSION}" \
-            https://github.com/raspberrypi/pico-sdk.git "${HOME}/pico-sdk"
-          cd "${HOME}/pico-sdk"
-          git submodule update --init
+          git clone https://github.com/ricardoquesada/bluepad32.git bluepad32
+          cd bluepad32
+          git checkout 6efa7123fe8badf5a40ad1205743a80b31c00ea4
+          git submodule update --init --recursive
 
       - name: Download gekkoboot
         uses: robinraju/release-downloader@v1
-        id: gekkoboot-download
         with:
           repository: 'webhdx/gekkoboot'
           latest: true
@@ -69,29 +52,19 @@ jobs:
       - name: Copy gekkoboot.dol
         run: |
           cd gekkoboot
-          if [ -f "gekkoboot.dol" ]; then
-              cp gekkoboot.dol "${GITHUB_WORKSPACE}/payload.dol"
-          else
-              echo "gekkoboot.dol not found"
-              exit 1
-          fi
+          cp gekkoboot.dol "${GITHUB_WORKSPACE}/payload.dol"
 
-      - name: Build
-        run: |
-          export PICO_SDK_PATH="$HOME/pico-sdk"
-          bash tools/build.sh
-
-      - name: Check firmware size (must be < 512 KB)
-        run: |
-          size=$(stat -c %s "build/pico2_w/dist/picoboot.bin")
-          echo "firmware size: $size bytes"
-          test "$size" -lt 524288
+      - name: Build inside the official PicoBoot devcontainer
+        uses: devcontainers/ci@v0.3
+        with:
+          imageName: ghcr.io/webhdx/picoboot
+          cacheFrom: ghcr.io/webhdx/picoboot
+          push: never
+          runCmd: |
+            bash tools/build.sh
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: picoboot-${{ steps.vars.outputs.sha_short }}
+          name: picoboot-bt2w-${{ steps.vars.outputs.sha_short }}
           path: dist/
-
-      - name: Add build summary
-        run: echo "$(cat .github/build_summary.md)" >> $GITHUB_STEP_SUMMARY

@@ -18,16 +18,16 @@ include(pico_sdk_import.cmake)
 
 project(picoboot LANGUAGES C CXX ASM VERSION ${PROJECT_VERSION_STRING})
 
+set(BLUEPAD32_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/bluepad32)
+
+# Use the BTstack bundled with the Pico SDK (RFC: pico_btstack_classic).
+set(PICO_BTSTACK_PATH ${PICO_SDK_PATH}/lib/btstack)
+
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/dist)
 
-# --- TEMPORARY DIAGNOSTIC BUILD ---
-# No Bluetooth (Bluepad32/BTstack/multicore/cyw43_arch) linked at all here.
-# Purpose: isolate whether linking the Bluetooth stack is what breaks the
-# IPL injection on Pico 2 W, or whether it's something else (board config,
-# SDK version, etc.) unrelated to Bluetooth entirely.
 add_executable(picoboot
         src/picoboot.c
         src/hw.c
@@ -35,14 +35,22 @@ add_executable(picoboot
         src/status_led.c
         src/status_led/gpio.c
         src/status_led/cyw43.c
+        src/gamecube.c
+        src/intercore.c
+        src/my_platform.c
+        src/controller_config.c
 )
 
 pico_generate_pio_header(picoboot
         ${CMAKE_CURRENT_LIST_DIR}/src/picoboot.pio
 )
 
-pico_set_program_name(picoboot "PicoBoot BT 2W (diagnostic, no BT)")
-pico_set_program_description(picoboot "Temporary diagnostic build without Bluetooth")
+pico_generate_pio_header(picoboot
+        ${CMAKE_CURRENT_LIST_DIR}/src/joybus.pio
+)
+
+pico_set_program_name(picoboot "PicoBoot BT 2W")
+pico_set_program_description(picoboot "RP2350 based modchip for Nintendo GameCube with Bluetooth gamepad support")
 pico_set_program_version(picoboot ${FW_VER_STRING})
 pico_set_program_url(picoboot "https://github.com/webhdx/PicoBoot")
 
@@ -51,14 +59,36 @@ target_link_options(pico_standard_link INTERFACE "LINKER:--script=${CMAKE_CURREN
 pico_enable_stdio_uart(picoboot 0)
 pico_enable_stdio_usb(picoboot 1)
 
-target_include_directories(picoboot PRIVATE src)
+target_include_directories(picoboot PRIVATE
+        src
+        ${BLUEPAD32_ROOT}/src/components/bluepad32/include)
+
+# Needed for btstack_config.h / sdkconfig.h so that libbluepad32 can include
+# them.
+include_directories(picoboot src)
+include_directories(${PICO_BTSTACK_PATH}/src)
+
+# Hack: The default search-path lookup for these headers must pick our project
+# copies. It works in the upstream examples, so keep the ordering the same.
 
 target_link_libraries(picoboot PRIVATE
         hardware_adc
         hardware_dma
         hardware_pio
+        hardware_flash
+        pico_flash
         pico_cyw43_arch_none
+        pico_btstack_classic
+        pico_btstack_cyw43
+        pico_multicore
         pico_stdlib
+        bluepad32
 )
+
+add_subdirectory(${BLUEPAD32_ROOT}/src/components/bluepad32 libbluepad32)
+
+# Our firmware target uses the same BTstack symbols without ambiguity, but the
+# default btstack_config.h must be ours, so keep src ahead of the SDK headers.
+include_directories(picoboot src)
 
 pico_add_extra_outputs(picoboot)
