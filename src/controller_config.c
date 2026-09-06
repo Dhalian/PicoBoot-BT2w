@@ -202,3 +202,16 @@ bool controller_config_save(const controller_profile_t* profile)
 
     return write_slot(slot, &rec);
 }
+
+int controller_config_list(controller_profile_t* out, int max_count)
+{
+    int count = 0;
+    for (int i = 0; i < CONTROLLER_CONFIG_MAX_SLOTS && count < max_count; i++) {
+        slot_record_t rec;
+        if (slot_is_valid(i, &rec)) {
+            out[count] = rec.profile;
+            count++;
+        }
+    }
+    return count;
+}
