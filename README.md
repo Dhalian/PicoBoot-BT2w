@@ -1,4 +1,4 @@
-<img src="/assets/PicoBoot.png" alt="PicoBoot" align="left"/>
+<img src="https://github.com/ShitScripts/PicoBoot-BT2w/raw/main/assets/PicoBoot.png" alt="PicoBoot" align="left"/>
 
 
 # PicoBoot BT 2W
