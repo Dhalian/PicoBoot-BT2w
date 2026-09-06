@@ -37,7 +37,7 @@ if [ ! -d "dist" ]; then
     mkdir dist
 fi
 
-tools/process_ipl.py dist/payload_pico2.uf2 payload.dol rp2350
+python3 tools/process_ipl.py dist/payload_pico2.uf2 payload.dol rp2350
 
 echo -e "\n🔨 ${YELLOW}Generating build files (board: ${board})...${NC}"
 cmake -G Ninja -B "build/${board}" -DCMAKE_BUILD_TYPE="${build_type}" -DPICO_BOARD="${board}" -S .
