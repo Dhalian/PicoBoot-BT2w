@@ -94,6 +94,22 @@ static void my_platform_on_init_complete(void) {
     btstack_run_loop_add_timer(&rumble_timer);
 }
 
+// Fallback label when the controller never reports a readable name over
+// Bluetooth (observed with some Xbox controllers -- d->name stays empty
+// even after on_device_ready). controller_type is set independently of
+// that, based on VID/PID recognition, so it's a more reliable source.
+// Only covers the two Xbox variants that are already used elsewhere in
+// this file (proven to compile in this codebase) -- anything else just
+// falls back to "Unknown controller" as before.
+static const char* controller_type_name(uni_hid_device_t* d)
+{
+    switch (d->controller_type) {
+        case k_eControllerType_XBox360Controller: return "Xbox 360 Controller";
+        case k_eControllerType_XBoxOneController: return "Xbox One / Series Controller";
+        default: return NULL;
+    }
+}
+
 static void my_platform_on_device_connected(uni_hid_device_t* d) {
     //logi("my_platform: device connected: %p\n", d);
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
@@ -104,7 +120,8 @@ static void my_platform_on_device_connected(uni_hid_device_t* d) {
         case 0 ... 3:
         {
             controller_profile_t profile;
-            const char* model_name = (d->name[0] != '\0') ? d->name : "Unknown controller";
+            const char* model_name = (d->name[0] != '\0') ? d->name : controller_type_name(d);
+            if (!model_name) model_name = "Unknown controller";
             controller_config_get_or_create(d->conn.btaddr, model_name, &profile);
 
             _players[idx].connected = true;
@@ -151,6 +168,21 @@ static void my_platform_on_device_disconnected(uni_hid_device_t* d) {
 
 static uni_error_t my_platform_on_device_ready(uni_hid_device_t* d) {
     //logi("my_platform: device ready: %p\n", d);
+
+    // Fix up a profile that was stamped "Unknown controller" at connect
+    // time (name/type not resolved yet back then) now that we know more.
+    const char* resolved_name = (d->name[0] != '\0') ? d->name : controller_type_name(d);
+    if (resolved_name) {
+        controller_profile_t profile;
+        if (controller_config_get_or_create(d->conn.btaddr, resolved_name, &profile)) {
+            if (strncmp(profile.model_name, "Unknown controller", sizeof(profile.model_name)) == 0
+                || profile.model_name[0] == '\0') {
+                strncpy(profile.model_name, resolved_name, CONTROLLER_CONFIG_MODEL_NAME_LEN - 1);
+                profile.model_name[CONTROLLER_CONFIG_MODEL_NAME_LEN - 1] = '\0';
+                controller_config_save(&profile);
+            }
+        }
+    }
 
     // You can reject the connection by returning an error.
     return UNI_ERROR_SUCCESS;
