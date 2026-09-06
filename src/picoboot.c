@@ -189,9 +189,26 @@ void main()
 
     // ---- Bluepad32 / GameCube Bluetooth glue (ends here at boot) ----
 
-    // Let the console complete the IPL injection before the PIO/DMA engines
-    // are torn down and reclaimed for the joybus emulation.
-    sleep_ms(800);
+    // Wait for the injection to actually complete instead of a blind fixed
+    // delay. Some consoles take noticeably longer than others to reach the
+    // point in their boot sequence where they request the IPL font over
+    // CS/CLK/DI -- a fixed 800ms window can tear the PIO/DMA engines down
+    // before the console has even asked for the data, silently killing the
+    // injection every single time on affected units. We instead poll the
+    // DMA channel and only proceed once it reports the transfer is done
+    // (or after a generous 5 second safety timeout, so we never hang here
+    // forever if something is wired wrong).
+    absolute_time_t injection_deadline = make_timeout_time_ms(5000);
+    while (dma_channel_is_busy(chan) && !time_reached(injection_deadline)) {
+        tight_loop_contents();
+    }
+
+    if (dma_channel_is_busy(chan)) {
+        printf("PicoBoot: Warning - injection did not complete within 5s, "
+               "proceeding anyway.\n");
+    } else {
+        printf("PicoBoot: Injection confirmed complete.\n");
+    }
 
     pio_sm_set_enabled(pio0, transfer_start_sm, false);
     pio_sm_set_enabled(pio0, clocked_output_sm, false);
