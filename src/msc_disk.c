@@ -34,7 +34,7 @@ static uint8_t const boot_sector[DISK_BLOCK_SIZE] = {
     0x00, 0x02,                               // Bytes per sector (512)
     0x01,                                     // Sectors per cluster
     0x01, 0x00,                               // Reserved sectors
-    0x02,                                     // Number of FATs
+    0x01,                                     // Number of FATs (we only serve one -- see LBA mapping in tud_msc_read10_cb)
     0x10, 0x00,                               // Root directory entries (16)
     DISK_BLOCK_NUM, 0x00,                     // Total sectors (16)
     0xF8,                                     // Media descriptor (fixed disk)
