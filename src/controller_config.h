@@ -75,4 +75,9 @@ int controller_config_list(controller_profile_t* out, int max_count);
 // connects. Returns false if no matching profile was found.
 bool controller_config_delete_by_suffix(const uint8_t suffix[3]);
 
+// Same as above, but matches the full 6-byte MAC exactly. Used by the
+// web API (http_server.c), which has room to send the whole address
+// rather than being squeezed into an 8.3 filename.
+bool controller_config_delete_by_mac(const uint8_t mac[6]);
+
 #endif // CONTROLLER_CONFIG_H
