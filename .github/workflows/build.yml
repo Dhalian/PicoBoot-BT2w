@@ -68,7 +68,7 @@ jobs:
 
       - name: Build
         env:
-          PICO_SDK_PATH: "${{ runner.home }}/pico-sdk"
+          PICO_SDK_PATH: "$HOME/runner/pico-sdk"
         run: |
           bash tools/build.sh
 
