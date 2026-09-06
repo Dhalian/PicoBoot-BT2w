@@ -14,6 +14,7 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 #include "hardware/structs/bus_ctrl.h"
+#include <lwip/netif.h>
 #include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
@@ -22,14 +23,17 @@
 #include "controller_config.h"
 #include "endian.h"
 #include "gamecube.h"
+#include "http_server.h"
 #include "hw.h"
 #include "picoboot.pio.h"
 #include "pio.h"
 #include "status_led.h"
 #include "usb_composite.h"
 #include "version.h"
+#include "wifi_creds.h"
 
 struct uni_platform* get_my_platform(void);
+
 static void bluepad_core_task(void)
 {
     // Lets flash_safe_execute() (used by controller_config.c) pause THIS
@@ -48,18 +52,42 @@ static void bluepad_core_task(void)
 
     uni_init(0, NULL);
 
+    // Wi-Fi + local web config server. Deliberately done AFTER Bluetooth
+    // is fully initialized, so a slow/unavailable Wi-Fi network delays
+    // only the web server, never controller pairing. Credentials live in
+    // flash (wifi_creds.c), set via the "wifi <ssid> <password>" serial
+    // command -- never hardcoded in source. If none have been saved yet,
+    // Wi-Fi is skipped entirely; everything else works normally.
+    char wifi_ssid[WIFI_CREDS_SSID_MAX_LEN];
+    char wifi_password[WIFI_CREDS_PASSWORD_MAX_LEN];
+    if (!wifi_creds_load(wifi_ssid, sizeof(wifi_ssid), wifi_password, sizeof(wifi_password))) {
+        printf("Wi-Fi: no credentials saved yet (use \"wifi <ssid> <password>\" over serial).\n");
+    } else {
+        cyw43_arch_enable_sta_mode();
+        printf("Wi-Fi: connecting to \"%s\"...\n", wifi_ssid);
+        if (cyw43_arch_wifi_connect_timeout_ms(wifi_ssid, wifi_password, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
+            printf("Wi-Fi: failed to connect (config drive / serial console still work normally).\n");
+        } else {
+            printf("Wi-Fi: connected, IP %s\n", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+            http_server_init();
+        }
+    }
+
     btstack_run_loop_execute();
 }
 
 // Tiny serial command console, typed over the same USB debug console used
 // for logs (e.g. via PuTTY). Lets you inspect/remove stored controller
-// profiles without waiting for the (still read-only) USB config drive.
-//   list             -- print every stored profile
-//   forget XXXXXX    -- erase the profile whose MAC ends with these 6 hex
-//                       chars (the same 6 chars shown in its .cfg filename)
+// profiles without waiting for the (still read-only) USB config drive,
+// and set Wi-Fi credentials without ever putting them in source code.
+//   list                    -- print every stored profile
+//   forget XXXXXX           -- erase the profile whose MAC ends with these 6 hex
+//                              chars (the same 6 chars shown in its .cfg filename)
+//   wifi <ssid> <password>  -- save Wi-Fi credentials to flash (no spaces
+//                              allowed in either -- reboot afterwards to connect)
 static void process_serial_commands(void)
 {
-    static char line[32];
+    static char line[128];
     static size_t line_len = 0;
 
     int c;
@@ -89,8 +117,18 @@ static void process_serial_commands(void)
                     } else {
                         printf("Usage: forget XXXXXX (6 hex chars, e.g. forget 25AD66)\n");
                     }
+                } else if (strncmp(line, "wifi ", 5) == 0) {
+                    char ssid[WIFI_CREDS_SSID_MAX_LEN];
+                    char password[WIFI_CREDS_PASSWORD_MAX_LEN];
+                    if (sscanf(line + 5, "%32s %63s", ssid, password) == 2) {
+                        bool saved = wifi_creds_save(ssid, password);
+                        printf(saved ? "Wi-Fi credentials saved. Reboot the Pico to connect.\n"
+                                      : "Failed to save Wi-Fi credentials (flash write error).\n");
+                    } else {
+                        printf("Usage: wifi <ssid> <password>  (no spaces allowed in either)\n");
+                    }
                 } else {
-                    printf("Unknown command. Try: list | forget XXXXXX\n");
+                    printf("Unknown command. Try: list | forget XXXXXX | wifi <ssid> <password>\n");
                 }
 
                 line_len = 0;
