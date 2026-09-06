@@ -76,6 +76,8 @@ static void process_serial_commands(void)
                     unsigned int b0, b1, b2;
                     if (sscanf(line + 7, "%2x%2x%2x", &b0, &b1, &b2) == 3) {
                         uint8_t suffix[3] = {(uint8_t)b0, (uint8_t)b1, (uint8_t)b2};
+                        printf("Parsed suffix: %02X %02X %02X (from input: \"%s\")\n",
+                            suffix[0], suffix[1], suffix[2], line + 7);
                         bool deleted = controller_config_delete_by_suffix(suffix);
                         printf(deleted ? "Profile forgotten.\n" : "No matching profile found.\n");
                     } else {
