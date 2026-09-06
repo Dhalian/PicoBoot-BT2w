@@ -101,11 +101,27 @@ static void my_platform_on_init_complete(void) {
 // Only covers the two Xbox variants that are already used elsewhere in
 // this file (proven to compile in this codebase) -- anything else just
 // falls back to "Unknown controller" as before.
+// Fallback label when the controller never reports a readable name over
+// Bluetooth (observed with some Xbox controllers -- d->name stays empty
+// even after on_device_ready). controller_type is set independently of
+// that, based on VID/PID recognition, so it's a more reliable source.
+//
+// Bluepad32 reuses Valve/SDL's controller-type enum naming convention
+// (confirmed: the two Xbox constants below were already used elsewhere
+// in this file before this change, proven to compile). The PS3/PS4/PS5/
+// Switch Pro constants follow the same naming pattern in SDL's own
+// header, so they're very likely correct here too -- if one of these
+// particular lines fails to build, it's a quick one-line fix once we
+// see the exact error.
 static const char* controller_type_name(uni_hid_device_t* d)
 {
     switch (d->controller_type) {
         case k_eControllerType_XBox360Controller: return "Xbox 360 Controller";
         case k_eControllerType_XBoxOneController: return "Xbox One / Series Controller";
+        case k_eControllerType_PS3Controller: return "PlayStation 3 Controller";
+        case k_eControllerType_PS4Controller: return "PlayStation 4 Controller";
+        case k_eControllerType_PS5Controller: return "PlayStation 5 Controller";
+        case k_eControllerType_SwitchProController: return "Nintendo Switch Pro Controller";
         default: return NULL;
     }
 }
