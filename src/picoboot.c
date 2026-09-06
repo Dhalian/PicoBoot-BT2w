@@ -34,6 +34,13 @@
 
 struct uni_platform* get_my_platform(void);
 
+// Wi-Fi status, settable from core 1 (bluepad_core_task) and readable
+// from core 0's "status" serial command at any time -- solves the
+// "missed the boot logs because PuTTY wasn't open yet" problem, since
+// these can be queried whenever, not just watched scroll by once.
+static volatile bool s_wifi_connected = false;
+static char s_wifi_ip[16] = "";
+
 static void bluepad_core_task(void)
 {
     // Lets flash_safe_execute() (used by controller_config.c) pause THIS
@@ -64,11 +71,18 @@ static void bluepad_core_task(void)
         printf("Wi-Fi: no credentials saved yet (use \"wifi <ssid> <password>\" over serial).\n");
     } else {
         cyw43_arch_enable_sta_mode();
+        // Sent to the router as part of the DHCP handshake -- lets you
+        // find the Pico's IP from your router's connected-devices list
+        // (usually shown as "picoboot") instead of needing to catch the
+        // boot logs in a serial terminal at exactly the right moment.
+        netif_set_hostname(netif_default, "picoboot");
         printf("Wi-Fi: connecting to \"%s\"...\n", wifi_ssid);
         if (cyw43_arch_wifi_connect_timeout_ms(wifi_ssid, wifi_password, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
             printf("Wi-Fi: failed to connect (config drive / serial console still work normally).\n");
         } else {
-            printf("Wi-Fi: connected, IP %s\n", ip4addr_ntoa(netif_ip4_addr(netif_default)));
+            strncpy(s_wifi_ip, ip4addr_ntoa(netif_ip4_addr(netif_default)), sizeof(s_wifi_ip) - 1);
+            s_wifi_connected = true;
+            printf("Wi-Fi: connected, IP %s\n", s_wifi_ip);
             http_server_init();
         }
     }
@@ -85,6 +99,8 @@ static void bluepad_core_task(void)
 //                              chars (the same 6 chars shown in its .cfg filename)
 //   wifi <ssid> <password>  -- save Wi-Fi credentials to flash (no spaces
 //                              allowed in either -- reboot afterwards to connect)
+//   status                  -- print current Wi-Fi connection state / IP
+//                              (works anytime, not just right at boot)
 static void process_serial_commands(void)
 {
     static char line[128];
@@ -127,8 +143,16 @@ static void process_serial_commands(void)
                     } else {
                         printf("Usage: wifi <ssid> <password>  (no spaces allowed in either)\n");
                     }
+                } else if (strcmp(line, "status") == 0) {
+                    if (s_wifi_connected) {
+                        printf("Wi-Fi: connected, IP %s\n", s_wifi_ip);
+                    } else {
+                        printf("Wi-Fi: not connected (either no credentials saved, "
+                               "still connecting, or connection failed -- \"wifi <ssid> <password>\" "
+                               "to (re)configure, then reboot).\n");
+                    }
                 } else {
-                    printf("Unknown command. Try: list | forget XXXXXX | wifi <ssid> <password>\n");
+                    printf("Unknown command. Try: list | forget XXXXXX | wifi <ssid> <password> | status\n");
                 }
 
                 line_len = 0;
